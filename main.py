@@ -34,7 +34,7 @@ import pandas as pd
 import pymssql
 con = pymssql.connect(host='titlon.uit.no', 
 					user="esi000@uit.no", 
-					password  = "d!78U9JNbOIGO5P$F8@aA",
+					password  = "<titlonpassord>",
 					database='OSE')  
 crsr=con.cursor()
 
