@@ -1,0 +1,9 @@
+.env
+db_create.py
+db.py
+db_indicies.py
+*.txt
+*.dmp
+Årsrapporter
+__pycach
+*.csv~
