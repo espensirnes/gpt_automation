@@ -4,239 +4,224 @@ import numpy as np
 import prompts
 import fitz  # PyMuPDF
 import pickle
+import os
+import get_tables
 
-ANALYZED_SAVE_DIR = r"Z:\OSE\accountingdata\annual_reports_extract" + '\\'
+
 FORCE_PARSING = True
 
 
-def open_pdf(path, year, isin, intcode, sid, client):
+def open_pdf(path, year, isin, intcode, sid, fname, name):
 
 	if sid is None:
 		sid = intcode
-	fname = ANALYZED_SAVE_DIR + f"{year}_{isin}_{sid}"
+	
 
-	print(f"Analyzing pdf text for {isin}")
-	sections, txt = exctract_pdf_text(path, fname)
-	print(f"Analyzing pdf tables for {isin}")
-	tables = extract_pdf_tables(path, txt, fname, client)
+	print(f"Analyzing pdf text for {name} ({year}) - {isin}")
+	sections = exctract_pdf_text(path, fname, True)
 	print("... done")
-	return tables, sections
+	return sections
 
 
-
-def extract_pdf_tables(path, txt, fname, client):
-	tables = tabula.read_pdf(path, pages='all', multiple_tables=True, guess=True, stream=False)
-	d = {}
-	for t in tables:
-		caption, fixed = get_table(a, t, txt, client)
-		d[caption] = fixed
-
-	with open(f"{fname}.tbl", 'wb') as f:
-		pickle.dump(d, f)
-
-	return d
-
-def get_table(a, tbl, txt, client):
-	tbl = tbl.to_csv(sep='|', index=False)
-	tablecont = gpt_identify_text_heavy(tbl, client)
-	if  tablecont !='NUMERIC':
-		return
-	prev_lines = get_previoius_lines(tbl, txt)
-	if prev_lines is None:
-		fixed = gpt_fix_table(tbl, client, True)
-		return f"Table {len(a)+1}: \n\n{fixed}"
-	fixed = gpt_fix_table(f"Possible header row: {prev_lines[1]} \n\n" + tbl, client)
-	caption = decide_table_caption(prev_lines, client)
-	return caption, fixed
+def exctract_pdf_text(pdf_path, fname, force):
 	
+	#Check for stored data:
+
+	sections = read_sections(fname, force)
+	if not sections is None:
+		return sections
 	
-def get_previoius_lines(tbl, txt):
-	"Unfortunately tabula tends to miss the first row, so adding the previous line in case it contains the headers"
-	N_PREV_LINES = 5
-	lines = tbl.split('\n')
-	if len(lines)<2:
-		return None
-	items = []
-	for i in range(1,min(len(lines), 4)):
-		items.append(re.escape(lines[i].split('|')[0]))
-	p = r'.*?'
-	pattern = f'^{p}({p.join(items)}){p}$'
-	m = re.match(pattern, txt, re.DOTALL)
-	if m is None:
-		return None
-	n = m.start(1)
-	prev_lines = txt[:n].split('\n')[-N_PREV_LINES:-2]
-	return prev_lines
-
-def gpt_fix_table(tablestr, client, simple = False):
-	# Call the model and print the response
-	if simple:
-		promptstr = prompts.fix_table_simple
-	else:
-		promptstr = prompts.fix_table_header
-
-	completion = client.chat.completions.create(
-		model="gpt-3.5",
-		messages=[
-			{"role": "system", "content": prompts.fix_table_header},
-			{"role": "user", "content": f"Here is the table: \n {tablestr}"}
-		], 
-		temperature = 0
-		)
-
-	return completion.choices[0].message.content
-
-def gpt_identify_text_heavy(tablestr, client):
-	# Call the model and print the response
-	
-	completion = client.chat.completions.create(
-		model="gpt-3.5-turbo",
-		messages=[
-			{"role": "system", "content": prompts.is_mainly_text},
-			{"role": "user", "content": f"Here is the table: \n {tablestr}"}
-		], 
-		temperature = 0
-		)
-
-	return completion.choices[0].message.content
-
-
-def decide_table_caption(captions, tablestr, client):
-	# Call the model and print the response
-	
-	completion = client.chat.completions.create(
-		model="gpt-3.5-turbo",
-		messages=[
-			{"role": "system", "content": prompts.decide_table_caption},
-			{"role": "user", "content": f"Here are the captions: \n {str(captions)}"},
-			{"role": "user", "content": f"Here is the table: \n {tablestr}"}
-		], 
-		temperature = 0
-		)
-
-	return completion.choices[0].message.content
-
-
-
-def exctract_pdf_text(path, fname):
 	# Open the PDF file
-	document = fitz.open(path)
+	document = fitz.open(pdf_path)
 
-	plain_count, heading_candidates, block_count, b = analyze_pdf(document)
+	pages, fonts, headings = analyze_pdf(document)
 
-	html, plain = get_pdf_contents(plain_count, block_count, heading_candidates, b)
-
-
-	for s, r in [("\r\n", "\n"), 
-				 ("\n\n", "\n"),
-				 ("  ", " "),]:
-		while s in html:
-			html = html.replace(s,r)
-
+	html = blocks_to_text(pages, fonts, headings, fname)
 	sections = get_sections(html)
 
-	document.close()
-	html_head = "<!DOCTYPE html>\n<html>\n<body>\n"
-	html_tail = "</html>\n</body>\n"
-	htmldoc = html_head + html + html_tail
 
-	for contents, extension in  [(htmldoc, '.html'), (plain,   '.txt')]:
-		with open(f'{fname}{extension}', 'w', encoding='utf-8') as f:
-			f.write(contents)
+	with open(f'{fname}{'.dmp'}', 'wb') as f:
+			pickle.dump(sections, f)
+
+	document.close()
 	
-	with open(f"{fname}.sec", 'wb') as f:
-		pickle.dump(sections, f)
+	return sections
+
+
+
+def read_sections(fname, force):
+
+	path = f'{fname}{'.dmp'}'
+	if os.path.exists(path) and (not force):
+		with open(path, 'rb') as f:
+			sections = pickle.load(f)
+		return sections
+	else:
+		return None
+
+def get_sections(html):
+	a = []
+	sections = html.split('<h1>')
+	for sec in sections:
+		if '</h2>' in sec:
+			sec = '<h2>' +  sec
+		subsections = sec.split('<h2>')
+		for subsec in subsections:
+			if '</h2>' in subsec:
+				subsec = '<h2>' +  subsec
+			a.append(subsec)
 	
-	return sections, plain
+	return a
+
+
+
 
 def analyze_pdf(document):
-	plain_count = {} #For detecting plain text
-	heading_candidates = {} #For detecting headings
-	block_count = {} #For detecting repeated page contents (footer, header etc.)
-	
 
+	p = []
+	undesired_blocks = {}
 	for page in document:
 		blocks = page.get_text("dict")["blocks"]
-		identify_undesired(blocks)
+		b = []
+		for block in blocks:
+			if 'lines' in block:
+				b.append(block)
+				add_undersired_contents(block, undesired_blocks)
+		p.append(b)
+	
+	undesired_blocks =  {key: value for key, value in undesired_blocks.items() if value > 10}
+
+	
+	pages = []
+	fonts = {}
+	headings = {}
+	
+	for page in p:
+		s = ''
+		blocks = []
+		for block in page:
+			if not undesiredfont(block) in undesired_blocks:
+				#s+=getline(block)
+				blocks.append(block)
+				add_fonts(block, fonts, headings)
+		pages.append(blocks)
+
+	#with open('test.txt', 'w', encoding='utf-8') as f:
+	#	f.write(s)
+
+	return pages, fonts, headings
+
+def getline(block):
+	s = ''
+	for line in block['lines']:
+		for span in line['spans']:
+			s+=f' {span['text']} '
+			print(span['text'])
+			print(span['bbox'])
+		s += '\n'
+	return s
 
 
-	return plain_count, heading_candidates, block_count, b
-
-def identify_undesired(blocks):
-	b = []
-	for block in blocks:
-		if 'lines' in block:
-			b.append(block)
-			#Undesired content
-			if len(block["lines"]) >= 1 and len(block["lines"]) <= 5:
-				add_to_dict(block_count, 
-					undesiredfont(block)
-					)
+def add_undersired_contents(block, undesired_blocks):
+	n = len(block["lines"]) 
+	#Undesired content
+	if n>= 1 and  n <= 5:
+		add_to_dict(undesired_blocks, 
+			undesiredfont(block)
+			)
+		
+def add_fonts(block, fonts, headings):
+	for line in block["lines"]:
+		for span in line["spans"]:
+			add_to_dict(fonts, fontstring(span))
+			add_to_dict(headings, fontstring(span, False))
 					
-def get_pdf_contents(plain_count, block_count, heading_candidates, blocks):
+def blocks_to_text(pages, fonts, headings, fname):
 
 	html = ''
 	plain = ''
-	plain_srt = sorted(plain_count, key=plain_count.get, reverse=True)
+	rows = []
+	numbers = []
+	spans = []
+	pages_spans = []
+	plain_font = sorted(fonts, key=fonts.get, reverse=True)[0]
+	headings = get_headings(headings, plain_font)
+	tables = []
+	for pnum, blocks in enumerate(pages):
+		spans = []
+		for block in blocks:
+			h, p, r, s = analyze_block(block, plain_font, headings)
+			html += h
+			plain += p
+			spans.append((len(rows),s))
+			rows.append(r)
+			add_number(r, numbers)
+		pages_spans.append(spans)
+		tbl, head, pos = get_tables.get(spans)
+		if len(tbl):
+			tables.append([tbl, head, pos])
 
-	undesired_blocks =  {key: value for key, value in block_count.items() if value > 10}
-	blocks_desired = []
-	for font, block in blocks:
-		if not block in undesiredfont(block):
-			blocks_desired.append((font, block))
+	
+	html = insert_tables(tables, html)
+	html = clean_html(html)
+	save_html(html, fname)
 
-	headings = get_headings(heading_candidates, plain_srt, undesired_blocks, b)
+	return html
 
-	for font, block in blocks_desired:
-		block_text, plain_text = analyze_block(block, font==plain_srt[0], headings, undesired_blocks)
-		html += block_text
-		plain += plain_text
-
-	return html, plain
-
+def add_number(r, numbers):
+	numbers.append(0)
+	for i in range(1, len(r)):
+		c = r[i].replace(',','').replace(' ','')
+		if is_number(c):
+			numbers[-1] += 1
 
 
-def get_sections(txt):
-	"Finds the heading with average number of characters in each section clostest to 5000"
-	sections = []
-	sec_means = []
-	for h in range(4):
-		sec = [s.split(f'</h{h+1}>') for s in txt.split(f'<h{h+1}>')]
-		sec = {s[0].strip():s[1] for s in sec[1:] if len(s[1])>100}
-		sections.append(sec)
-		sec_means.append(np.mean([len(sec[k]) for k in sec]))
-	m = list(np.abs(np.array(sec_means)-5000))
-	h = m.index(min(m))
 
-	return sections[h]
 
-def count_fonts(block, plain_count, heading_candidates, block_count):
-	"for detecting headings"
-	if not "lines" in block:
-		return ''
+def is_number(x):
+	try:
+		a = float(x)
+		return True
+	except:
+		return False
 
-	n = len(block["lines"])
 
-	#headings
-	for line in block["lines"]:
-		for s in line["spans"]
-			add_to_dict(heading_candidates, 
-				f"{s['font']}:{s['size']}:{s['color']}"
-				)
+def save_html(html,fname):
+
+	meta = f"\n<meta charset='utf-8'><title>{fname.split('\\')[-1]}</title>"
+	html_head = f"<!DOCTYPE html>\n<html>\n<head>{meta}\n<style>\n{css}\n</style>\n</head>\n<body>\n"
+	html_tail = "</html>\n</body>\n"
+	htmldoc = html_head + html + html_tail
+
+	with open(f'{fname}{'.html'}', 'w', encoding='utf-8') as f:
+		f.write(htmldoc)
+
+def insert_tables(tables, html):
+	DIVSTR = '\n<div class="markdown-table">\n'
+	lines = html.split('\n')
+	for i, (t, h, p) in enumerate(tables):
+		a, b = p
+		heading = f'\n<b>Table {i}: {h}</b>\n\n'
+		lines[a:b] = [''] * (b - a)
+		lines[a] = heading + DIVSTR + t + '\n</div>\n'
 		
 
+	html = '\n'.join(lines)
 
-	#Normal font
-	font = 'NA'
-	if len(block["lines"]) > 3:
-		for line in block["lines"]:
-			s = line["spans"]
-			font = plainfont(s[0])
-			for span in s:
-				if font !=  plainfont(span):
-					return font
-		add_to_dict(plain_count, font)
-	return font
+	return html
+
+
+
+def clean_html(html):
+	for s, r in [("\r\n", "\n"), 
+				("\n"*3, "\n"*2)]:
+		while s in html:
+			html = html.replace(s,r)
+	
+	return html
+
+
+
 
 def add_to_dict(d, key):
 	if len(key.strip()) == 0:
@@ -248,23 +233,44 @@ def add_to_dict(d, key):
 
 
 
-def get_headings(heading_candidates, plain_srt, undesired_blocks, b):
+def get_headings(headings, plain_font):
+	plain_font_size = float(plain_font.split(':')[1])
+	plain_font_color = float(plain_font.split(':')[2])
+	htmp={k:headings[k] for k in headings}
+	heads = []
+	for b, z in [(False, 1.1), (True, 1.1), (False, 1.0), (True, 1.0)]:
+		headings_filtered = {}
+		for k in htmp:
+			hsize = float(k.split(':')[1])
+			hcolor = float(k.split(':')[2])
+			if hsize>z*plain_font_size and ((hcolor!=plain_font_color) or b):
+				headings_filtered[k] = htmp[k]
+		h = sorted(headings_filtered, key=headings_filtered.get, reverse=True)
+		if len(h)>1:
+			if htmp[h[0]]>5:
+				heads.append(h[0])
+				htmp.pop(h[0])
+	if len(heads)==0:
+		heads = sorted(headings_filtered, key=headings_filtered.get, reverse=True)
 
-
-	plain_text_size = float(plain_srt[0].split(':')[1])
-	h, h_cnt = [], []
-	for k in heading_candidates:
-		heading_candidates[k]
-		
 	
-	headings = np.array(h)[np.argsort(h_cnt)[::-1]][:4][::-1]
+	
+	#heading frequency should increase
+	#if it does not increase, subsequent items are probably not headings
+	h = []
+	nmin = headings[heads[0]]
+	for k in heads:
+		if headings[k]<nmin:
+			break
+		h.append(k)
 
-	return headings
+	return h
 
-def plainfont(span):
-	s = f"{span['font']}:{ span['size']}"
-	s = s.replace('-Bold','').replace('-Italics','').replace('-Book','').replace('-Light','')
-	return s
+def fontstring(span):
+	font, size, color = span['font'], span['size'], span['color']
+	return f"{font}:{size}:{color}"
+
+
 
 def undesiredfont(block):
 	"Creates keys to flag undesired repeated contents"
@@ -273,15 +279,9 @@ def undesiredfont(block):
 		for span in line["spans"]:
 			s = span["text"].strip()
 			if len(s) and not_int(s):#disregarding page numbers
-				keys.append(f"{span["font"]}{span["size"]}:{span["text"]}")
+				keys.append(f"{span['font']}{span['size']}:{span['text']}")
 	key = ';'.join(keys)
 	return key
-
-def headingfont(line):
-	names = []
-	for span in line["spans"]:
-		names.append(f"{span["font"]}:{span["size"]}")
-	return ';'.join(names)
 
 def not_int(s):
 	try:
@@ -290,41 +290,113 @@ def not_int(s):
 		return True
 	
 
-def analyze_block(block, plain, headings, undesired_blocks):
-	if undesiredfont(block) in undesired_blocks:
-		return '', ''
-	
-	
-	block_text = '\n'
-	plain_text = '\n'
+def analyze_block(block, plain_font, headings):
+	html = '\n'
+	plain = '\n'
+	row = []
+	spans = []
+	was_plain = False
 	for line in block["lines"]:
-		block_text += analyze_line(line, True)
-		plain_text += analyze_line(line, False)
+		h, p, is_plain = analyze_line(line, headings, plain_font, spans)
+		if (not was_plain) and is_plain:
+			html += '<p>' + h
+			was_plain = True
+		elif was_plain and (not is_plain):
+			html += '</p>' + h
+			was_plain = False
+		else:
+			html += h
+		
+		plain += p
+		row.append(p)
+	
+	if ('<p>' in html) and not ('</p>' in html):
+		html += '</p>'
 
-		hf = headingfont(line)
-		if hf in headings:
-			level = list(headings).index(hf) + 1
-			block_text = f'<h{level}>' + plain_text + f'</h{level}>\n'
-		elif plain:
-			block_text = '<p>' + block_text + '</p>\n'
 
-	return block_text, plain_text
+	return html, plain, row, spans
 
-def analyze_line(line, add_tags):
-	s = ''
+def analyze_line(line, headings, plain_font,spans):
+	plain = ''
+	html = ''
+	is_plain = True
+	head = 'NA'
 	for span in line["spans"]:
 		text = span["text"]
 		font = span["font"]
-		size = span["size"]
+		print(f"{font}:{span["size"]}:{text}")
+		spans.append(span)
 
-		# Check for boldness and italics in the font name as a simple heuristic
-		if add_tags:
-			text = "<b>" + text + "</b>" if "Bold" in font else text
-				
-			text = "<i>" + text + "</i>" if "Italic" in font else text
+		plain += f" {text} "
+
+		fnt = fontstring(span)
+		heading = fontstring(span, False)
+
+		if not fnt == plain_font:
+			is_plain == False
+
+		if heading in headings:
+			head = heading
+
+		text = "<b>" + text + "</b>" if "Bold" in font else text
+			
+		text = "<i>" + text + "</i>" if "Italic" in font else text
 		
-		s += f" {text} "
+		html += f" {text} "
+
+	if head in headings:
+		level = list(headings).index(head) + 1
+		html = f'<h{level}>' + plain + f'</h{level}>\n'
+
+	return html, plain, is_plain
 
 
-	return text
+
+css = """
+body {
+  counter-reset: h1;
+}
+
+h1 {
+	color: #4CAF50; /* Green */
+	font-weight: bold;
+	margin-bottom: 0.5em;
+	text-shadow: 1px 1px 2px #ccc;
+	counter-reset: h2;
+	counter-increment: h1;
+	content: counter(h1) ". ";
+}
+
+h2 {
+	color: #2196F3; /* Blue */
+	font-weight: 500;
+	margin-bottom: 0.4em;
+	counter-reset: h3;
+	counter-increment: h2;
+	content: counter(h1) "." counter(h2) ". ";
+}
+
+h3 {
+	color: #F44336; /* Red */
+	font-weight: normal;
+	margin-bottom: 0.3em;
+	counter-reset: h4;
+	counter-increment: h3;
+	content: counter(h1) "." counter(h2) "." counter(h3) ". ";
+}
+
+/* Style to display the numbers before the headings */
+h1:before, h2:before, h3:before {
+  content: counter(h1) " ";
+}
+
+h2:before {
+  content: counter(h1) "." counter(h2) " ";
+}
+
+h3:before {
+  content: counter(h1) "." counter(h2) "." counter(h3) " ";
+}
+.markdown-table { white-space: pre; font-family: monospace; }
+"""
 

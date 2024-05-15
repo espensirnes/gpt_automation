@@ -1,58 +1,110 @@
 import prompts
+import os
+import re
 
 
-def get(pdf_tables, pdf_text, client):
-	tblresponse = []
-	txtresponse = []
-	for k in pdf_tables:
-		tblresponse.append(get_table(k, pdf_tables[k] , client))
-	for k in pdf_tables:
-		txtresponse.append(get_text(k, pdf_text[k] , client))
+def get(sections, client, name, year, fname, isin):
 
-	compiled = get_all('\n'.join(txtresponse), '\n'.join(tblresponse))
-	answ, expl = compiled.split(';')
+
+		
+	summary = summarize(sections, client, name, year, fname, isin)
+	print(f'Final evaluation for {name}({year}) - {isin} ... ')
+	answ, expl = conclude(summary, client, fname)
+	print("... done")
+
 	return answ, expl 
 
-def get_all(text, tables, client):
+def summarize(sections, client, name, year, fname, isin):
+
+	if  os.path.exists(f'{fname}{'_summary.txt'}'):
+		with open(f'{fname}{'_summary.txt'}', 'r', encoding='utf-8') as f:
+			summary = f.read()
+			return summary
+		
 	# Call the model and print the response
+	n = len(sections)
+
+	full_response = ''
+
+	for i in range(n):
+		print(f'Evaluating section {i} for {name}({year}) - {isin}')
+		res, heading = get_summary(sections, i, client)
+		if not res is None:
+			full_response += f"{heading}\n\n{res}\n\n"
+
+	with open(f'{fname}{'_summary.txt'}', 'w', encoding='utf-8') as f:
+		f.write(full_response)
+	return full_response
+
+def get_summary(sections, i, client):
+
 	
+	s = sections[i]
+	if s == '':
+		return None, None
+	if '<h1>' in s:
+		t = 'h1'
+	else:
+		t = 'h2'
+	
+	heading = f'# Section {i}:'
+	if f"<{t}>" in s:
+		heading = f'# Section {i}:' + s[s.index( f"<{t}>")+3:s.index( f"</{t}>")-3]
 	completion = client.chat.completions.create(
-		model="gpt-4-turbo",
-		messages=[
-			{"role": "system", "content": prompts.analyze_all},
-			{"role": "user", "content": f"Here are the text summaries:\n{text}"},
-			{"role": "user", "content": f"Here are the table summaries:\n{tables}"},
-		], 
+		model="gpt-4o",
+		messages= [
+			{"role": "system", "content": prompts.summarize},
+			{"role": "user", "content": f"Here is section {i+1}:\n{s}"}], 
 		temperature = 0
 		)
 
-	return completion.choices[0].message.content
+	response =completion.choices[0].message.content
 
-def get_table(caption, table , client):
+
+
+	return response, heading
+
+	
+
+
+def conclude(summary , client, fname):
+
+	if  os.path.exists(f'{fname}{'_conclusion.txt'}'):
+		with open(f'{fname}{'_conclusion.txt'}', 'r', encoding='utf-8') as f:
+			conclusion = f.read()
+			grade, answ = split_response(conclusion)
+			return grade, answ
+		
 	# Call the model and print the response
 	
 	completion = client.chat.completions.create(
-		model="gpt-3.5-turbo",
+		model="gpt-4o",
 		messages=[
-			{"role": "system", "content": prompts.analyze_table},
-			{"role": "user", "content": f"{caption}\n\n {table}"},
+			{"role": "system", "content": prompts.conclude},
+			{"role": "user", "content": f"Here is the summary of the annual report:\n\n {summary}"},
 		], 
 		temperature = 0
 		)
+	resp = completion.choices[0].message.content 
+	with open(f'{fname}{'_conclusion.txt'}', 'w', encoding='utf-8') as f:
+		f.write(resp)
 
-	return completion.choices[0].message.content 
+	grade, answ = split_response(resp)
 
-def get_text(heading, text , client):
-	# Call the model and print the response
-	
-	completion = client.chat.completions.create(
-		model="gpt-3.5-turbo",
-		messages=[
-			{"role": "system", "content": prompts.analyze_text},
-			{"role": "user", "content": f"{heading}\n\n {text}"},
-		], 
-		temperature = 0
-		)
+	return grade, answ 
 
-	return completion.choices[0].message.content 
 
+
+def split_response(resp):
+	if ';' in resp:
+		grade, answ = resp.split(';')
+		if grade == 'None':
+			return None, answ
+		return int(grade), answ
+	else:
+		m = re.search(r'\b\d{1,2}\b', resp[:40])
+		if (m is None) and ('None' in resp[:10]):
+			return None, resp[5:]
+		grade = int(m.group(0))
+		answ = resp[resp.index(str(grade))+2:]
+	return grade, answ

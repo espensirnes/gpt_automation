@@ -9,7 +9,7 @@ import numpy as np
 import response
 import parsepdf
 
-
+ANALYZED_SAVE_DIR = r"Z:\OSE\accountingdata\annual_reports_extract" + '\\'
 
 try:
 	import db
@@ -34,7 +34,7 @@ import pandas as pd
 import pymssql
 con = pymssql.connect(host='titlon.uit.no', 
 					user="esi000@uit.no", 
-					password  = "d!78U9JNbOIGO5P$F8@aA",
+					password  = "pw",
 					database='OSE')  
 crsr=con.cursor()
 
@@ -45,29 +45,29 @@ def analyze_dir(dir):
 	# Iterating over files
 	recs = get_recs()
 	for entry in os.listdir(dir):
-		path = os.path.join(dir, entry)
-		a = analyze_report(path, client)
-		recs = add_rec(recs, a)
-		if not db is None:
-			db.add_to_db(a)
+		if 'BMG3597X1039' in entry:
+			path = os.path.join(dir, entry)
+			a = analyze_report(path, client)
+			recs = add_rec(recs, a)
+			if not db is None:
+				db.add_to_db(a)
 
 
 def analyze_report(path, client):
-
+	
 	if not os.path.isfile(path):
 		print(f'{path} not a file or not found')
 		return
-	isin, t, year = get_isin_dates(path)
-	intcode, sid, isin2 = get_comp_info(isin)
-	res = [isin]
-	nonres = [isin]+ (len(COLS)-1)*[None]
-	if isin2 is None:
-		print(f'ISIN {isin} not found')
-		return nonres
-	
+	isin_, t, year = get_isin_dates(path)
+	name, intcode, sid, isin = get_comp_info(isin_)
+	res = [isin_, isin]
+	nonres = [isin_, isin]+ (len(COLS)-1)*[None]
+
+	fname = ANALYZED_SAVE_DIR + f"{year}_{isin_}_{sid}"
+
 	r = get_alpha(isin, t[0], t[1])
 	if r is None:
-		print(f'No observations of {isin} for the period')
+		print(f'No observations of {isin_} for the period')
 		return nonres
 
 	res.extend(r)
@@ -78,22 +78,18 @@ def analyze_report(path, client):
 		else:
 			res.extend(r[1:])
 
-	pdf_tables, pdf_text = parsepdf.open_pdf(path, year, isin, intcode, sid, client)
-	answ, expl = response.get(pdf_tables, pdf_text, client)
-	print(f"{isin}: {answ};{expl}")
-	res.extend([answ, expl])
+	sections = parsepdf.open_pdf(path, year, isin_, intcode, sid, fname, name)
+	grade, expl = response.get(sections, client, name, year, fname, isin_)
+	print(f"{isin}: {grade};{expl}")
+	res.extend([grade, expl])
 	
 
 	return res
 
 def get_isin_dates(path):
-	for s in [r'[A-Z]{2}\d{10}', 
-			  r'[A-Z]{3}\d{9}',
-			  ]:
-		m = re.search(s, path)
-		if not m is None: break
-	s = m.group()
-	year = int(path.split('\\')[-1][:4])
+	fname_itms = path.split('\\')[-1].split('_')
+	year = int(fname_itms [0])
+	s = fname_itms [5]
 	t= [date(year + t, 6, 1) for t in range(3)]
 	return s, t, year
 
@@ -113,10 +109,25 @@ def get_alpha(isin, t0, t1):
 
 	d = {k[0]:r[:,i] for i,k in enumerate(crsr.description)}
 	df = pd.DataFrame(d).apply(pd.to_numeric, errors='coerce')
+	df_x = df[['rm', 'SMB','HML','LIQ','MOM']]
 
-	x = np.array(sm.add_constant(df[['rm', 'SMB','HML','LIQ','MOM']]))
+	x = np.array(sm.add_constant(df_x))
 	y = np.array(df[['rx']])
-	model = sm.OLS(y, x)
+	try:
+		model = sm.OLS(y, x)
+	except:
+		nacount = df_x.isna().sum()
+		deldf = nacount[nacount>0.5*len(df_x)]
+		if len(deldf):
+			for k in deldf:
+				df_x.pop(k)
+		else:
+			df = df[['rx','rm', 'SMB','HML','LIQ','MOM']]
+			df = df.dropna()
+			df_x = df[['rm', 'SMB','HML','LIQ','MOM']]
+			y = np.array(df[['rx']])
+		x = np.array(sm.add_constant(df_x))
+		model = sm.OLS(y, x)
 	res = model.fit()
 
 	isin,name = r[0][:2]
@@ -125,24 +136,29 @@ def get_alpha(isin, t0, t1):
 
 def get_comp_info(isin):
 	crsr.execute(f"""
-		SELECT DISTINCT [Internal code], [SecurityId], [ISIN] FROM [OSE].[dbo].[equity]
+		SELECT DISTINCT [Name], [Internal code], [SecurityId], [ISIN] FROM [OSE].[dbo].[equity]
 		WHERE [ISIN] = '{isin}'
 		""")
 	r=crsr.fetchall()
 	if len(r):
-		intcode, sid, isin = r[0]
-		return intcode, sid, isin
+		name, intcode, sid, isin = r[0]
+		return name, intcode, sid, isin
 	crsr.execute(f"""
-		SELECT [Internal code],[SecurityId] ,[ISIN]
-		FROM [OSE].[dbo].[AllISINS]
-		WHERE [ISIN] = '{isin}'
+		SELECT DISTINCT [Name], [Internal code],T2.[SecurityId] ,T2.[ISIN]
+		FROM [OSE].[dbo].[AllISINS] T1
+		LEFT JOIN
+		(SELECT DISTINCT [SecurityId] ,[ISIN]
+		FROM [OSE].[dbo].[equity]) T2
+		ON T1.[SecurityId]=T2.[SecurityId]
+		WHERE T1.[ISIN] = '{isin}'
 		""")
 	r=crsr.fetchall()
-	if len(r):#This means the ISIN exist, but it is not found in the main table
-		intcode, sid, isin = r[0]
-		raise RuntimeError('You need to search for isin in historical data first')
+	if len(r):#This means the ISIN exist, but it is not found in the main table, so new isin is fetched
+		name, intcode, sid, isin = r[0]
+		return name, intcode, sid, isin
+
 	
-	return None, None, None
+	return None, None, None, None
 
 
 def get_isins():
@@ -168,7 +184,7 @@ def add_rec(recs, data):
 	shutil.copy(RECORDS, RECORDS+'~')
 	with open(RECORDS,'w') as f:
 		f.write(recs)
-	os.remove(RECORDS)
+	os.remove(RECORDS+'~')
 	return recs
 
 def get_recs():
