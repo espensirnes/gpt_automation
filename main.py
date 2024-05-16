@@ -19,9 +19,9 @@ except:
 
 
 RECORDS = 'rec.csv'
-COLS = ['ISIN', 'Name', 
-		'pval_alpha_1', 'pval_beta_1' , 'tval_alpha_1', 'tval_beta_1',
-		'pval_alpha_2', 'pval_beta_2' , 'tval_alpha_2', 'tval_beta_2',
+COLS = ['ISIN', 'ISIN_db', 'Name', 
+		'pval_alpha_1', 'pval_beta_1' , 'alpha_1', 'beta_1',
+		'pval_alpha_2', 'pval_beta_2' , 'alpha_2', 'beta_2',
 		'Answer', 'Explanation']
 
 
@@ -34,7 +34,7 @@ import pandas as pd
 import pymssql
 con = pymssql.connect(host='titlon.uit.no', 
 					user="esi000@uit.no", 
-					password  = "pw",
+					password  = "A4$LGfMl%WQ2488Nt7Pdf",
 					database='OSE')  
 crsr=con.cursor()
 
@@ -45,12 +45,13 @@ def analyze_dir(dir):
 	# Iterating over files
 	recs = get_recs()
 	for entry in os.listdir(dir):
-		if 'BMG3597X1039' in entry:
+		if True:#'BMG2786A1062' in entry:
 			path = os.path.join(dir, entry)
 			a = analyze_report(path, client)
 			recs = add_rec(recs, a)
 			if not db is None:
 				db.add_to_db(a)
+
 
 
 def analyze_report(path, client):
@@ -61,7 +62,7 @@ def analyze_report(path, client):
 	isin_, t, year = get_isin_dates(path)
 	name, intcode, sid, isin = get_comp_info(isin_)
 	res = [isin_, isin]
-	nonres = [isin_, isin]+ (len(COLS)-1)*[None]
+	nonres = [isin_, isin]+ (len(COLS)-2)*[None]
 
 	fname = ANALYZED_SAVE_DIR + f"{year}_{isin_}_{sid}"
 
@@ -79,13 +80,23 @@ def analyze_report(path, client):
 			res.extend(r[1:])
 
 	sections = parsepdf.open_pdf(path, year, isin_, intcode, sid, fname, name)
-	grade, expl = response.get(sections, client, name, year, fname, isin_)
-	print(f"{isin}: {grade};{expl}")
+
+	grade, expl = None, None
+	if len(sections) and isnummeric(r[1]):
+		grade, expl = response.get(sections, client, name, year, fname, isin_)
+		print(f"{isin}: {grade};{expl}")
 	res.extend([grade, expl])
 	
 
 	return res
 
+def isnummeric(x):
+	try:
+		x = x*1
+		return True
+	except:
+		return False
+	
 def get_isin_dates(path):
 	fname_itms = path.split('\\')[-1].split('_')
 	year = int(fname_itms [0])
@@ -179,23 +190,29 @@ def get_isins():
 def add_rec(recs, data):
 	if data is None:
 		return recs
-	data = [str(i) for i in data]
-	recs += '\n' + ';'.join(data)
+	data = [str(i).replace('\n', '\r') for i in data]
+	assert len(data)==len(recs[0])
+	recs.append(data)
 	shutil.copy(RECORDS, RECORDS+'~')
 	with open(RECORDS,'w') as f:
-		f.write(recs)
+		for r in recs:
+			f.write(';'.join(r) + '\n')
 	os.remove(RECORDS+'~')
 	return recs
 
 def get_recs():
 	if os.path.exists(RECORDS):
 		with open(RECORDS,'r') as f:
-			recs = f.read()
+			text = f.read()
+			recs = [r.split(';') for r in text.split('\n')]
 		return recs
 	else:
 		with open(RECORDS,'w') as f:
 			f.write(';'.join(COLS))
-		return ''
+			recs = [COLS]
+		return recs
+	
+
 
 
 

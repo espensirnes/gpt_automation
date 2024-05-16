@@ -18,7 +18,7 @@ def open_pdf(path, year, isin, intcode, sid, fname, name):
 	
 
 	print(f"Analyzing pdf text for {name} ({year}) - {isin}")
-	sections = exctract_pdf_text(path, fname, True)
+	sections = exctract_pdf_text(path, fname, False)
 	print("... done")
 	return sections
 
@@ -32,11 +32,14 @@ def exctract_pdf_text(pdf_path, fname, force):
 		return sections
 	
 	# Open the PDF file
-	document = fitz.open(pdf_path)
 
-	pages, fonts, headings = analyze_pdf(document)
+	document = open_and_split_pages(pdf_path)
 
-	html = blocks_to_text(pages, fonts, headings, fname)
+	pages, fonts = analyze_pdf(document)
+
+	
+
+	html = blocks_to_text(pages, fonts, fname)
 	sections = get_sections(html)
 
 
@@ -47,6 +50,59 @@ def exctract_pdf_text(pdf_path, fname, force):
 	
 	return sections
 
+
+
+import fitz  # Import the library
+
+def open_and_split_pages(pdf_path):
+	document = fitz.open(pdf_path)
+	edit_doc = fitz.open(pdf_path)
+	for i in range(len(document)-1, -1, -1):
+		split_page(document, i, edit_doc)
+	document.close()
+	return edit_doc
+
+def split_page(doc, pnum, edit_doc):
+	page = doc[pnum]
+	rect = page.rect  # Get the dimensions of the page
+	width = rect.width
+	height = rect.height
+	
+	if width < height:  # Check if the page is landscape
+		return
+	
+	blocks = page.get_text("dict")["blocks"]
+	for block in blocks:
+		if blocking_block(block,width/2):
+			return
+	
+	# Define the rectangles for the left and right halves
+	left_half = fitz.Rect(0, 0, width / 2, height)
+	right_half = fitz.Rect(width / 2, 0, width, height)
+
+	page_number = page.number
+
+	# Insert two new pages in place of the current page
+
+	edit_doc.delete_page(pnum)
+	for half in [right_half, left_half]:
+		n = edit_doc.insert_page(pnum, width=width / 2, height=height)  # Insert at current index
+		edit_doc[pnum].show_pdf_page(edit_doc[pnum].rect, doc, pnum, clip=half)  # Offset due to insertion
+	
+
+
+def blocking_block(block, midpoint):
+	if 'bbox' in block and 'lines' in block:
+		x0, y0, x1, y1 = block['bbox']
+		if x0 < midpoint < x1:
+			for line in block['lines']:
+				x0, y0, x1, y1 = line['bbox']
+				if x0 < midpoint < x1:
+					for span in line['spans']:
+						x0, y0, x1, y1 = span['bbox']
+						if x0 < midpoint < x1:
+							return True
+	return False
 
 
 def read_sections(fname, force):
@@ -60,16 +116,15 @@ def read_sections(fname, force):
 		return None
 
 def get_sections(html):
+
 	a = []
 	sections = html.split('<h1>')
 	for sec in sections:
-		if '</h2>' in sec:
-			sec = '<h2>' +  sec
-		subsections = sec.split('<h2>')
-		for subsec in subsections:
-			if '</h2>' in subsec:
-				subsec = '<h2>' +  subsec
-			a.append(subsec)
+		if '</h1>' in sec:
+			sec = '<h1>' +  sec
+
+		a.append(sec)
+
 	
 	return a
 
@@ -94,30 +149,36 @@ def analyze_pdf(document):
 	
 	pages = []
 	fonts = {}
-	headings = {}
-	
+	s = ''
 	for page in p:
-		s = ''
 		blocks = []
 		for block in page:
 			if not undesiredfont(block) in undesired_blocks:
-				#s+=getline(block)
+				s+=getline(block)
 				blocks.append(block)
-				add_fonts(block, fonts, headings)
+				add_fonts(block, fonts, s)
 		pages.append(blocks)
+	
+	if is_unreadable(s):
+		return 'unreadable', None
 
 	#with open('test.txt', 'w', encoding='utf-8') as f:
 	#	f.write(s)
 
-	return pages, fonts, headings
+	return pages, fonts
 
+def is_unreadable(s):
+	n = 0
+	for char in s:
+		if '\ue000' <= char <= '\uf8ff' or '\U000f0000' <= char <= '\U000ffffd' or '\U00100000' <= char <= '\U0010fffd':
+			n += 1
+	return n/len(s)>0.9
+	
 def getline(block):
 	s = ''
 	for line in block['lines']:
 		for span in line['spans']:
-			s+=f' {span['text']} '
-			print(span['text'])
-			print(span['bbox'])
+			s+=f'{span['text']}'
 		s += '\n'
 	return s
 
@@ -126,31 +187,47 @@ def add_undersired_contents(block, undesired_blocks):
 	n = len(block["lines"]) 
 	#Undesired content
 	if n>= 1 and  n <= 5:
-		add_to_dict(undesired_blocks, 
-			undesiredfont(block)
-			)
-		
-def add_fonts(block, fonts, headings):
-	for line in block["lines"]:
-		for span in line["spans"]:
-			add_to_dict(fonts, fontstring(span))
-			add_to_dict(headings, fontstring(span, False))
-					
-def blocks_to_text(pages, fonts, headings, fname):
+		key = undesiredfont(block)
+		undesired_blocks[key] = undesired_blocks.get(key, 0) + 1 
 
+		
+def add_fonts(block, fonts, s):
+
+	for line in block["lines"]:
+		identical = all(fontstring(sp) == fontstring(line["spans"][0]) for sp in line["spans"])
+		s_ = ''
+		for span in line["spans"]:
+			key = fontstring(span)
+			(a, t) = fonts.get(key, ([] , []))
+			s_ += span['text']
+			if not identical:
+				a.append(len(s)+ len(s_))
+				t.append(span['text'].strip())
+				fonts[key] = (a, t)
+		if identical:
+			a.append(len(s))
+			t.append(s_.strip())
+			fonts[key] = (a, t)
+
+			
+
+					
+def blocks_to_text(pages, fonts, fname):
+	if pages == 'unreadable':
+		return pages
 	html = ''
 	plain = ''
 	rows = []
 	numbers = []
 	spans = []
 	pages_spans = []
-	plain_font = sorted(fonts, key=fonts.get, reverse=True)[0]
-	headings = get_headings(headings, plain_font)
+	heading, plain_font = get_fonts(fonts)
 	tables = []
+	used_headings = {}
 	for pnum, blocks in enumerate(pages):
 		spans = []
 		for block in blocks:
-			h, p, r, s = analyze_block(block, plain_font, headings)
+			h, p, r, s = analyze_block(block, plain_font, heading, used_headings, plain)
 			html += h
 			plain += p
 			spans.append((len(rows),s))
@@ -223,48 +300,41 @@ def clean_html(html):
 
 
 
-def add_to_dict(d, key):
-	if len(key.strip()) == 0:
-		return
-	if key in d:
-		d[key] += 1
-	else:
-		d[key] = 1
 
+def get_fonts(fonts):
+	fa = {}
+	fn = {}
+	srt = sorted(fonts, key=fonts.get, reverse=True)
+	plain = srt[0]
+	totlen = 0
+	for k in fonts:
+		totlen += sum([len(x) for x in fonts[k][1]])
+	headings = {}
+	for hspan in [0.8, 0.6, 0.4, 0.2]:
+		d = {}
+		for k in srt:
+			a, t = fonts[k]
+			h = [len(s) for s in t]
+			n = sum(h)
+			diff = 0
+			if len(a)>5:
+				diff = np.sort(np.diff(a))
+				diff =diff[int(len(a)*0.5)]
+			start = min(a)/totlen
+			end = max(a)/totlen
 
-
-def get_headings(headings, plain_font):
-	plain_font_size = float(plain_font.split(':')[1])
-	plain_font_color = float(plain_font.split(':')[2])
-	htmp={k:headings[k] for k in headings}
-	heads = []
-	for b, z in [(False, 1.1), (True, 1.1), (False, 1.0), (True, 1.0)]:
-		headings_filtered = {}
-		for k in htmp:
-			hsize = float(k.split(':')[1])
-			hcolor = float(k.split(':')[2])
-			if hsize>z*plain_font_size and ((hcolor!=plain_font_color) or b):
-				headings_filtered[k] = htmp[k]
-		h = sorted(headings_filtered, key=headings_filtered.get, reverse=True)
-		if len(h)>1:
-			if htmp[h[0]]>5:
-				heads.append(h[0])
-				htmp.pop(h[0])
-	if len(heads)==0:
-		heads = sorted(headings_filtered, key=headings_filtered.get, reverse=True)
-
-	
-	
-	#heading frequency should increase
-	#if it does not increase, subsequent items are probably not headings
-	h = []
-	nmin = headings[heads[0]]
-	for k in heads:
-		if headings[k]<nmin:
+			if False:
+				print((n/totlen<0.05,diff,end-start,len(np.unique(t)),np.mean(h)))
+				print(t)
+				d[end-start] = t
+			if (n/totlen<0.05 and end-start>hspan and 
+				len(np.unique(t))>4 and  np.mean(h)>10 and np.mean(h)<500):
+				headings[k] = len(np.unique(t))
+		if len(headings):
 			break
-		h.append(k)
+	h = sorted(headings, key=headings.get)
+	return h[0], plain
 
-	return h
 
 def fontstring(span):
 	font, size, color = span['font'], span['size'], span['color']
@@ -290,14 +360,17 @@ def not_int(s):
 		return True
 	
 
-def analyze_block(block, plain_font, headings):
+def analyze_block(block, plain_font, heading, used_headings, fulltxt):
 	html = '\n'
 	plain = '\n'
 	row = []
 	spans = []
 	was_plain = False
+
+	h0 = ''
 	for line in block["lines"]:
-		h, p, is_plain = analyze_line(line, headings, plain_font, spans)
+		h, p, is_plain = analyze_line(line, heading, plain_font, spans, used_headings, fulltxt)
+
 		if (not was_plain) and is_plain:
 			html += '<p>' + h
 			was_plain = True
@@ -308,6 +381,7 @@ def analyze_block(block, plain_font, headings):
 			html += h
 		
 		plain += p
+		h0 = h
 		row.append(p)
 	
 	if ('<p>' in html) and not ('</p>' in html):
@@ -316,27 +390,25 @@ def analyze_block(block, plain_font, headings):
 
 	return html, plain, row, spans
 
-def analyze_line(line, headings, plain_font,spans):
+
+def analyze_line(line, heading, plain_font,spans, used_headings, fulltxt):
 	plain = ''
 	html = ''
 	is_plain = True
-	head = 'NA'
+	
 	for span in line["spans"]:
 		text = span["text"]
 		font = span["font"]
-		print(f"{font}:{span["size"]}:{text}")
+
 		spans.append(span)
 
 		plain += f" {text} "
 
 		fnt = fontstring(span)
-		heading = fontstring(span, False)
 
 		if not fnt == plain_font:
 			is_plain == False
 
-		if heading in headings:
-			head = heading
 
 		text = "<b>" + text + "</b>" if "Bold" in font else text
 			
@@ -344,13 +416,31 @@ def analyze_line(line, headings, plain_font,spans):
 		
 		html += f" {text} "
 
-	if head in headings:
-		level = list(headings).index(head) + 1
-		html = f'<h{level}>' + plain + f'</h{level}>\n'
+		html = add_heading(fnt, heading, text, used_headings, html, fulltxt)
+
 
 	return html, plain, is_plain
 
+def add_heading(fnt, heading, text, used_headings, html, fulltxt):
+	if not fnt == heading:
+		return html
+	
+	if len(used_headings):
+		if len(fulltxt) - list(used_headings.values())[-1]<1000: #no text in heading range
+			return html
+		
+	head_txt = text.lower().strip()
+	for s in ['cont', 'continued', 'forts.', 'fortsettelse']:
+		head_txt = head_txt.replace(f' {s}', '')
 
+	if head_txt in used_headings:
+		return html
+	
+	used_headings[head_txt] = len(fulltxt)
+
+	html = f'<h1>' + text + f'</h1>\n'
+
+	return html
 
 css = """
 body {

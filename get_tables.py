@@ -8,6 +8,7 @@ def get(spanitems):
 	for r, spans in spanitems:
 		for span in spans:
 			all_spans.append((r, span))
+			
 	table, rnums = bbox_to_table(all_spans)
 	table, heading, pos = remove_text(table, rnums)
 	if not is_nummerical(table):
@@ -81,10 +82,37 @@ def bbox_to_table(all_spans):
 	rnums = np.full((ny+1, nx+1), None, dtype='object')
 	for r, span in page:
 		x0, y0, x1, y1 = span['bbox']
-		table[y[y0], x[x0]] = span['text']
+		table[y[y0], x[x0]] = handle_cell_text(span['text'])
 		rnums[y[y0], x[x0]] = r
 
+	table = remove_nulls(table)
+
 	return table, rnums
+
+
+def remove_nulls(table):
+	valid = np.ones(table.shape[1], dtype=bool)
+	for i in range(3):
+		table[table==' '*i] = None
+	for c in range(table.shape[1]):
+		if all(table[:,c] == None):
+			valid[c] = False
+	table = table[:, valid]
+	valid = np.ones(table.shape[0], dtype=bool)
+	for r in range(table.shape[0]):
+		if all(table[r] == None):
+			valid[r] = False
+	table = table[valid]
+	return table
+
+
+
+
+def handle_cell_text(celltext):
+	for s in ['\t', '\n']:
+		celltext = celltext.replace(s, '')
+	return celltext
+
 
 def split_spans(arr, k):
 	s = np.argsort(arr[:,k])
