@@ -1,7 +1,5 @@
 .env
-db_create.py
-db.py
-db_indicies.py
+connect.py
 *.txt
 *.dmp
 Årsrapporter

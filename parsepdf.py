@@ -159,6 +159,8 @@ def analyze_pdf(document):
 				add_fonts(block, fonts, s)
 		pages.append(blocks)
 	
+	if len(s) == 0:
+		return 'no content', None
 	if is_unreadable(s):
 		return 'unreadable', None
 
@@ -213,7 +215,7 @@ def add_fonts(block, fonts, s):
 
 					
 def blocks_to_text(pages, fonts, fname):
-	if pages == 'unreadable':
+	if pages == 'unreadable' or pages == 'no content':
 		return pages
 	html = ''
 	plain = ''

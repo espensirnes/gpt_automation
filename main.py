@@ -8,76 +8,48 @@ import statsmodels.api as sm
 import numpy as np
 import response
 import parsepdf
+import connect
+import db
+import pandas as pd
 
 ANALYZED_SAVE_DIR = r"Z:\OSE\accountingdata\annual_reports_extract" + '\\'
 
-try:
-	import db
-except:
-	db = None
-
-
-
 RECORDS = 'rec.csv'
-COLS = ['ISIN', 'ISIN_db', 'Name', 
-		'pval_alpha_1', 'pval_beta_1' , 'alpha_1', 'beta_1',
-		'pval_alpha_2', 'pval_beta_2' , 'alpha_2', 'beta_2',
-		'Answer', 'Explanation']
-
-
-
-#TITLON SCRIPT HERE:
-#*********************************
-
-
-import pandas as pd
-import pymssql
-con = pymssql.connect(host='titlon.uit.no', 
-					user="esi000@uit.no", 
-					password  = "A4$LGfMl%WQ2488Nt7Pdf",
-					database='OSE')  
-crsr=con.cursor()
-
-#*********************************
 
 def analyze_dir(dir):
 	client = OpenAI()
 	# Iterating over files
 	recs = get_recs()
+	conn, crsr = connect.connect()
 	for entry in os.listdir(dir):
 		if True:#'BMG2786A1062' in entry:
 			path = os.path.join(dir, entry)
-			a = analyze_report(path, client)
+			a = analyze_report(path, client, crsr)
 			recs = add_rec(recs, a)
-			if not db is None:
-				db.add_to_db(a)
+			db.add_to_db(a, conn, crsr)
+	conn.close()
 
 
 
-def analyze_report(path, client):
+def analyze_report(path, client, crsr):
 	
 	if not os.path.isfile(path):
 		print(f'{path} not a file or not found')
 		return
 	isin_, t, year = get_isin_dates(path)
-	name, intcode, sid, isin = get_comp_info(isin_)
+	name, intcode, sid, isin = get_comp_info(isin_, crsr)
 	res = [isin_, isin]
-	nonres = [isin_, isin]+ (len(COLS)-2)*[None]
+	nonres = [isin_, isin]+ (len(db.COLS)-2)*[None]
 
 	fname = ANALYZED_SAVE_DIR + f"{year}_{isin_}_{sid}"
 
-	r = get_alpha(isin, t[0], t[1])
-	if r is None:
+	for i in range(2):
+		r = get_alpha(isin, t[0], t[i+1], crsr)
+		res.extend(r[i==0:])
+	
+	if r[0] is None:
 		print(f'No observations of {isin_} for the period')
 		return nonres
-
-	res.extend(r)
-	for i in range(1,2):
-		r = get_alpha(isin, t[0], t[i+1])
-		if r is None:
-			res.extend(4*[None])
-		else:
-			res.extend(r[1:])
 
 	sections = parsepdf.open_pdf(path, year, isin_, intcode, sid, fname, name)
 
@@ -85,7 +57,7 @@ def analyze_report(path, client):
 	if len(sections) and isnummeric(r[1]):
 		grade, expl = response.get(sections, client, name, year, fname, isin_)
 		print(f"{isin}: {grade};{expl}")
-	res.extend([grade, expl])
+	res.extend([grade, expl[:1990]])
 	
 
 	return res
@@ -104,7 +76,7 @@ def get_isin_dates(path):
 	t= [date(year + t, 6, 1) for t in range(3)]
 	return s, t, year
 
-def get_alpha(isin, t0, t1):
+def get_alpha(isin, t0, t1, crsr):
 	crsr.execute(f"""
 		SELECT DISTINCT [ISIN] ,[Name], [Date],[SMB] ,[HML] ,[LIQ] ,[MOM] 
 					,[lnDeltaP]-[bills_3month_Lnrate] as [rx]
@@ -116,7 +88,7 @@ def get_alpha(isin, t0, t1):
 	r = np.array(crsr.fetchall())
 
 	if len(r)==0:
-		return None
+		return 7*[None]
 
 	d = {k[0]:r[:,i] for i,k in enumerate(crsr.description)}
 	df = pd.DataFrame(d).apply(pd.to_numeric, errors='coerce')
@@ -143,9 +115,9 @@ def get_alpha(isin, t0, t1):
 
 	isin,name = r[0][:2]
 
-	return name, *res.pvalues[0:2], *res.params[0:2]
+	return name, *res.pvalues[0:2], *res.params[0:2], *res.tvalues[0:2]
 
-def get_comp_info(isin):
+def get_comp_info(isin, crsr):
 	crsr.execute(f"""
 		SELECT DISTINCT [Name], [Internal code], [SecurityId], [ISIN] FROM [OSE].[dbo].[equity]
 		WHERE [ISIN] = '{isin}'
@@ -172,17 +144,6 @@ def get_comp_info(isin):
 	return None, None, None, None
 
 
-def get_isins():
-	crsr.execute("""
-		SELECT DISTINCT T1.[SecurityId],T1.[CompanyId],T2.[ISIN]
-
-		FROM [OSEData].[dbo].[equityfeed_EquityInformation] T1
-		LEFT JOIN
-		(SELECT DISTINCT [SecurityId],[ISIN]
-		FROM [OSEData].[dbo].[equityfeed_EquitySecurityInformation]) T2
-		ON T1.[SecurityId] = T2.[SecurityId]
-		ORDER BY T1.[SecurityId],T1.[CompanyId],T2.[ISIN]""")
-	r=crsr.fetchall()
 
 
 
@@ -208,8 +169,8 @@ def get_recs():
 		return recs
 	else:
 		with open(RECORDS,'w') as f:
-			f.write(';'.join(COLS))
-			recs = [COLS]
+			f.write(';'.join(db.COLS))
+			recs = [db.COLS]
 		return recs
 	
 
