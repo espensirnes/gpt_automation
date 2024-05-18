@@ -46,6 +46,7 @@ def get_summary(sections, i, client):
 	heading = f'# Section {i}:'
 	if "<h1>" in s:
 		heading = f'# Section {i}:' + s[s.index("<h1>")+3:s.index("</h1>")-1]
+	s=s[:120000]
 	completion = client.chat.completions.create(
 		model="gpt-4o",
 		messages= [

@@ -304,9 +304,7 @@ def clean_html(html):
 
 
 def get_fonts(fonts):
-	fa = {}
-	fn = {}
-	srt = sorted(fonts, key=fonts.get, reverse=True)
+	srt = sorted(fonts, key=lambda k: sum(len(s) for s in fonts[k]), reverse=True)
 	plain = srt[0]
 	totlen = 0
 	for k in fonts:
@@ -335,6 +333,8 @@ def get_fonts(fonts):
 		if len(headings):
 			break
 	h = sorted(headings, key=headings.get)
+	if len(h)==0:
+		return '', plain
 	return h[0], plain
 
 

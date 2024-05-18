@@ -45,10 +45,13 @@ def analyze_report(path, client, crsr):
 
 	for i in range(2):
 		r = get_alpha(isin, t[0], t[i+1], crsr)
-		res.extend(r[i==0:])
+		res.extend(r[i>0:])
 	
 	if r[0] is None:
 		print(f'No observations of {isin_} for the period')
+		return nonres
+	elif r[3] is None:
+		print(f'No valid regression for the period for  {isin_} ')
 		return nonres
 
 	sections = parsepdf.open_pdf(path, year, isin_, intcode, sid, fname, name)
@@ -57,7 +60,7 @@ def analyze_report(path, client, crsr):
 	if len(sections) and isnummeric(r[1]):
 		grade, expl = response.get(sections, client, name, year, fname, isin_)
 		print(f"{isin}: {grade};{expl}")
-	res.extend([grade, expl[:1990]])
+	res.extend([grade])
 	
 
 	return res

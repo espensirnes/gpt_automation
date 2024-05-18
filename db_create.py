@@ -17,8 +17,7 @@ gpt_ann_rep="""CREATE TABLE [research].[dbo].[gpt_ann_rep](
 	[beta_2] float NULL,
 	[t_alpha_2] float NULL, 
 	[t_beta_2] float NULL,
-	[Answer] int NULL, 
-        [Explanation]  varchar(2000) NULL
+	[Answer] int NULL
         )"""
 
 

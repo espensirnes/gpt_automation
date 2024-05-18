@@ -12,7 +12,7 @@ TBL = 'gpt_ann_rep'
 COLS = ['ISIN', 'ISIN_db', 'Name', 
 		'pval_alpha_1', 'pval_beta_1' , 'alpha_1', 'beta_1' , 't_alpha_1', 't_beta_1',
 		'pval_alpha_2', 'pval_beta_2' , 'alpha_2', 'beta_2' , 't_alpha_2', 't_beta_2',
-		'Answer', 'Explanation']
+		'Answer']
 
 
 def add_to_db(res, conn, crsr):	
@@ -39,7 +39,7 @@ def table_exist(db,table,crsr):
 
 def isin_exists(crsr, isin):
 	crsr.execute("SELECT [ISIN] FROM [research].[dbo].[gpt_ann_rep]"
-			  	F"WHERE [ISIN] = {isin}")
+			  	F"WHERE [ISIN] = '{isin}'")
 	r=crsr.fetchall()
 	return len(r)>0
 
