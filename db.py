@@ -8,24 +8,40 @@ import connect
 
 
 
-TBL = 'gpt_ann_rep'
-COLS = ['ISIN', 'ISIN_db', 'Name', 
+
+COLS = ['ISIN','ISIN_db', 'Year', 'Name', 'intcode', 'sid',
+		'mean_ret_company1','mean_ret_index1', 'n01', 'n1',
+
+		'idx01', 'idx11', 'p01', 'p11',
+
 		'pval_alpha_1', 'pval_beta_1' , 'alpha_1', 'beta_1' , 't_alpha_1', 't_beta_1',
+		'dw1', 'rsq_adj1', 'cond_no1', 
+		'pval_alpha_1M', 'pval_beta_1M' , 'alpha_1M', 'beta_1M' , 't_alpha_1M', 't_beta_1M',
+		'dw1M', 'rsq_adj1M', 'cond_no1M', 
+
+		'mean_ret_company2','mean_ret_index2', 'n02', 'n2',
+
+		'idx02', 'idx12', 'p02', 'p12',
+
 		'pval_alpha_2', 'pval_beta_2' , 'alpha_2', 'beta_2' , 't_alpha_2', 't_beta_2',
-		'Answer']
+		'dw2', 'rsq_adj2', 'cond_no2', 
+		'pval_alpha_2M', 'pval_beta_2M' , 'alpha_2M', 'beta_2M' , 't_alpha_2M', 't_beta_2M',
+		'dw2M', 'rsq_adj2M', 'cond_no2M', 
+
+		'Answer', 'Explanation']
 
 
-def add_to_db(res, conn, crsr):	
-	if not table_exist(connect.DBNAME,TBL,crsr ):
-		create_table(TBL, conn, crsr, connect.DBNAME, droptable=True)
+def add_to_db(res, conn, crsr, tbl):	
+	if not table_exist(connect.DBNAME,tbl,crsr ):
+		create_table(tbl, conn, crsr, connect.DBNAME, droptable=True)
 	
-	if isin_exists(crsr, res[0]):
+	if isin_exists(crsr, res[0], res[2]):
 		return 
 	
 	n = len(COLS)
 	cols = '['+'], ['.join(COLS)+']'
 	sstr = ','.join(['%s']*n)
-	sqlstr = (f"INSERT INTO [research].[dbo].[{TBL}] ({cols})  VALUES ({sstr})")
+	sqlstr = (f"INSERT INTO [research].[dbo].[{tbl}] ({cols})  VALUES ({sstr})")
 	execute(sqlstr, conn, crsr, res)	
 
 
@@ -37,11 +53,17 @@ def table_exist(db,table,crsr):
 	r=crsr.fetchall()
 	return len(r)==1
 
-def isin_exists(crsr, isin):
-	crsr.execute("SELECT [ISIN] FROM [research].[dbo].[gpt_ann_rep]"
-			  	F"WHERE [ISIN] = '{isin}'")
+def isin_exists(crsr, isin, year):
+	crsr.execute("SELECT [ISIN] FROM [research].[dbo].[gpt_ann_rep] "
+			  	F"WHERE [ISIN] = '{isin}' AND [Year]={year}")
 	r=crsr.fetchall()
 	return len(r)>0
+
+def get_isin_year_in_db(crsr, tbl):
+	crsr.execute(f"SELECT [ISIN],[Year] FROM [research].[dbo].[{tbl}]")
+	r=crsr.fetchall()
+	a = [f"{isin}_{year}" for isin, year in r]
+	return a
 
 def fetch(sqlstr,crsr):
 	crsr.execute(sqlstr)
@@ -52,6 +74,7 @@ def execute(sqlstr,conn,crsr, values = None):
 	if values == None:
 		crsr.execute(sqlstr)
 	else:
+		values = [int(x) if isinstance(x, np.integer) else x for x in values]
 		crsr.execute(sqlstr, values)
 	conn.commit()
 

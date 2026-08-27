@@ -6,19 +6,22 @@ import fitz  # PyMuPDF
 import pickle
 import os
 import get_tables
+import decrypting
+from glyphlist import glyph_to_char
+
 
 
 FORCE_PARSING = True
 
 
-def open_pdf(path, year, isin, intcode, sid, fname, name):
+def open_pdf(path, year, isin, intcode, sid, fname, name, force = False):
 
 	if sid is None:
 		sid = intcode
 	
 
 	print(f"Analyzing pdf text for {name} ({year}) - {isin}")
-	sections = exctract_pdf_text(path, fname, False)
+	sections = exctract_pdf_text(path, fname, force)
 	print("... done")
 	return sections
 
@@ -31,12 +34,26 @@ def exctract_pdf_text(pdf_path, fname, force):
 	if not sections is None:
 		return sections
 	
-	# Open the PDF file
+	#Check readablity
+	s, _ = get_text(pdf_path)
+	if len(s) == 0:
+		return 'no content', None
+	
+	cmap = None
+	if decrypting.count_unreadable(s)/len(s)>0.5:
+		return 'unreadable', None
+		#Experimental:
+		pdf_path = decrypting.decrypt(pdf_path, fname)
+		f = decrypting.get_all_fonts(pdf_path)
+		s, cmap = get_text(pdf_path, f)
+		if decrypting.count_unreadable(s)/len(s)>0.5:
+			return 'unreadable', None
+	
+	document = split_pages(pdf_path)
 
-	document = open_and_split_pages(pdf_path)
 
-	pages, fonts = analyze_pdf(document)
-
+	#pages, fonts = analyze_pdf(document, f ,cmap)#experimental
+	pages, fonts = analyze_pdf(document, None ,None)
 	
 
 	html = blocks_to_text(pages, fonts, fname)
@@ -51,15 +68,30 @@ def exctract_pdf_text(pdf_path, fname, force):
 	return sections
 
 
+def get_text(path, fonts = None):
+	#lag kode for kun å hete text
+	s = ''
+	document = fitz.open(path)
+	cmap = None
+	for page in document:
+		blocks = page.get_text("dict")["blocks"]
+		for block in blocks:
+			if 'lines' in block:
+				s+=getline(block, fonts, cmap, True)
 
-import fitz  # Import the library
+	return s, cmap
+	
 
-def open_and_split_pages(pdf_path):
+
+
+
+def split_pages(pdf_path):
 	document = fitz.open(pdf_path)
 	edit_doc = fitz.open(pdf_path)
 	for i in range(len(document)-1, -1, -1):
 		split_page(document, i, edit_doc)
 	document.close()
+
 	return edit_doc
 
 def split_page(doc, pnum, edit_doc):
@@ -131,16 +163,18 @@ def get_sections(html):
 
 
 
-def analyze_pdf(document):
+def analyze_pdf(document, fonts, donefonts):
 
 	p = []
 	undesired_blocks = {}
+	s = ''
 	for page in document:
 		blocks = page.get_text("dict")["blocks"]
 		b = []
 		for block in blocks:
 			if 'lines' in block:
 				b.append(block)
+				s+=getline(block, fonts, donefonts)
 				add_undersired_contents(block, undesired_blocks)
 		p.append(b)
 	
@@ -154,35 +188,57 @@ def analyze_pdf(document):
 		blocks = []
 		for block in page:
 			if not undesiredfont(block) in undesired_blocks:
-				s+=getline(block)
+				s+=getline(block, fonts, donefonts, True)
 				blocks.append(block)
 				add_fonts(block, fonts, s)
 		pages.append(blocks)
-	
-	if len(s) == 0:
-		return 'no content', None
-	if is_unreadable(s):
-		return 'unreadable', None
+
 
 	#with open('test.txt', 'w', encoding='utf-8') as f:
 	#	f.write(s)
 
 	return pages, fonts
 
-def is_unreadable(s):
-	n = 0
-	for char in s:
-		if '\ue000' <= char <= '\uf8ff' or '\U000f0000' <= char <= '\U000ffffd' or '\U00100000' <= char <= '\U0010fffd':
-			n += 1
-	return n/len(s)>0.9
 	
-def getline(block):
+def getline(block, fonts, cmap, add = False):
 	s = ''
 	for line in block['lines']:
 		for span in line['spans']:
-			s+=f'{span['text']}'
+			spantext = span['text']
+			if not cmap is None:
+				if add:
+					font = getfont(fonts, span['font'], cmap)
+				else:
+					font = cmap[span['font']]
+				if len(font)>0:
+					spantext = test_read(span['text'], font)
+			s += spantext
 		s += '\n'
 	return s
+
+def getfont(fonts, font, cmap):
+	d = {}
+	if font in cmap:
+		d = cmap[font]
+	
+	for f in fonts:
+		if font in f:
+			cmapdict = fonts[f]['cmap'].getBestCmap()
+			for k, v in cmapdict.items():
+				d[k] = glyph_to_char.get(v, v)
+	cmap[font] = d
+	return d
+
+def test_read(s, font):
+	if decrypting.count_unreadable(s)/len(s)<0.1:
+		return s
+	r = ''
+	for c in s:
+		r += font.get(ord(c),c)
+
+	a=0
+	return r
+		
 
 
 def add_undersired_contents(block, undesired_blocks):
