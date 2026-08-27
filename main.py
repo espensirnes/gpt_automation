@@ -45,7 +45,7 @@ def parseonly(dir):
 	conn, crsr = connect.connect()
 	for entry in os.listdir(dir):
 		path = os.path.join(dir, entry)
-		if 'BMG2786A1062' in path:
+		if 'BMG2786A1062' in path or True: #edit to only parse specific files
 			if not os.path.isfile(path):
 				print(f'{path} not a file or not found')
 				return
